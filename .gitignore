@@ -1,0 +1,27 @@
+# Ignore node_modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# dotenv environment files
+.env
+
+# Build output
+dist/
+build/
+
+# Optional: ignore VS Code settings
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
