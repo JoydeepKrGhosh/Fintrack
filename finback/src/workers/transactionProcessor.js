@@ -1,26 +1,54 @@
 const { Worker } = require("bullmq");
-const pool = require("../config/db");
-const { storeOnSolana } = require("../utils/solanaUtils");
+const Redis = require("ioredis");
+const { storeOnSolana } = require("../utils/solana.js");
+const { generateHash } = require("../utils/hashUtils");
+const { addTransaction } = require("../models/transaction.model");
 
-const connection = new Redis(process.env.REDIS_URL);
+const connection = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+});
+
+connection.on("error", (err) => {
+  console.error("❌ Redis connection error:", err);
+});
 
 const transactionWorker = new Worker(
   "transactionQueue",
   async (job) => {
-    const { userId, amount, category, merchant, date, type, source } = job.data;
+    const {
+      userId,
+      amount,
+      categoryId,
+      merchantId,
+      description,
+      isUseful = true,
+      isRecurring = false,
+      recurringPattern = null,
+      paymentMethod = "UPI",
+      source = "manual",
+      transactionDate = new Date(),
+    } = job.data;
 
     try {
-      // Generate a hash of transaction data
-      const hash = generateHash({ userId, amount, category, merchant, date, type });
+      const hash = generateHash({ userId, amount, categoryId, merchantId, description });
 
-      // Store hash on Solana
+      console.log("🧾 Storing on Solana...");
       const solanaSignature = await storeOnSolana(hash);
       if (!solanaSignature) throw new Error("Failed to store hash on Solana");
 
-      // Insert transaction into PostgreSQL
-      await pool.query(
-        "INSERT INTO transactions (user_id, amount, category, merchant, date, type, source, solana_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        [userId, amount, category, merchant, date, type, source, hash]
+      await addTransaction(
+        userId,
+        amount,
+        categoryId,
+        merchantId,
+        description,
+        isUseful,
+        isRecurring,
+        recurringPattern,
+        paymentMethod,
+        source,
+        transactionDate,
+        hash // make sure `addTransaction` accepts and stores this
       );
 
       console.log("✅ Transaction processed:", job.id);
@@ -30,5 +58,7 @@ const transactionWorker = new Worker(
   },
   { connection }
 );
+
+console.log("🚀 Transaction worker started");
 
 module.exports = { transactionWorker };

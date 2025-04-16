@@ -1,8 +1,14 @@
 const pool = require("../config/db");
-const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction } = require("@solana/web3.js");
+const {
+  Connection,
+  Keypair,
+  Transaction,
+  SystemProgram,
+  sendAndConfirmTransaction,
+} = require("@solana/web3.js");
 const crypto = require("crypto");
 const { categorizeTransaction } = require("../utils/aiClassifier");
-const { transactionQueue } = require("../config/queue");
+const { transactionQueue } = require("../queues/transactionQueue");
 require("dotenv").config();
 
 // 🔹 Solana Setup
@@ -13,35 +19,31 @@ const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 const secretKey = Uint8Array.from(JSON.parse(process.env.SOLANA_SECRET_KEY));
 const payer = Keypair.fromSecretKey(secretKey);
 
-// 🔹 Hash function for transactions
+// 🔹 Hash Function
 const generateHash = (transactionData) => {
   return crypto.createHash("sha256").update(JSON.stringify(transactionData)).digest("hex");
 };
 
 // 🔹 Check for Duplicate Transactions
-const isDuplicateTransaction = async (userId, amount, merchant, date) => {
+const isDuplicateTransaction = async (userId, amount, merchantId, transactionDate) => {
   const result = await pool.query(
-    "SELECT * FROM transactions WHERE user_id = $1 AND amount = $2 AND merchant = $3 AND date = $4",
-    [userId, amount, merchant, date]
+    `SELECT * FROM transactions WHERE user_id = $1 AND amount = $2 AND merchant_id = $3 AND transaction_date = $4`,
+    [userId, amount, merchantId, transactionDate]
   );
   return result.rows.length > 0;
 };
 
-// 🔹 Store Hash on Solana (Using Memo Program)
+// 🔹 Store Hash on Solana
 const storeOnSolana = async (hash) => {
   try {
-    const recipient = payer.publicKey;
-    const lamports = 0; // No SOL transfer, just metadata storage
-
     const transaction = new Transaction().add(
       SystemProgram.transfer({
         fromPubkey: payer.publicKey,
-        toPubkey: recipient,
-        lamports: lamports,
+        toPubkey: payer.publicKey,
+        lamports: 0,
       })
     );
-
-    transaction.add(Buffer.from(hash, "utf-8")); // Attach hash
+    transaction.add(Buffer.from(hash, "utf-8")); // Attach metadata
 
     const signature = await sendAndConfirmTransaction(connection, transaction, [payer]);
     console.log("Stored Hash on Solana:", signature);
@@ -52,33 +54,79 @@ const storeOnSolana = async (hash) => {
   }
 };
 
-// 🔹 Extracted Transaction API (SMS, Email, Notifications)
+// 🔹 Extracted Transaction API (SMS/Email/Manual)
 const extractTransaction = async (req, res) => {
   try {
-    const { amount, merchant, date, type, source } = req.body;
-    const userId = req.user.userId;
+    const {
+      amount,
+      merchantName,
+      date,
+      description = "",
+      source = "sms",
+      paymentMethod = "UPI",
+      isUseful = true,
+    } = req.body;
 
-    // Validate input
-    if (!amount || !merchant || !date || !type || !source) {
-      return res.status(400).json({ error: "All transaction fields are required." });
+    const userId = req.user.userId;
+    const transactionDate = new Date(date);
+
+    if (!amount || !merchantName || !date) {
+      return res.status(400).json({ error: "Amount, merchant, and date are required." });
+    }
+
+    // 🔹 Resolve merchant_id (insert if new)
+    let merchantId;
+    const merchantRes = await pool.query(
+      `SELECT id FROM merchants WHERE name = $1 LIMIT 1`,
+      [merchantName]
+    );
+    if (merchantRes.rows.length > 0) {
+      merchantId = merchantRes.rows[0].id;
+    } else {
+      const insertMerchant = await pool.query(
+        `INSERT INTO merchants (name) VALUES ($1) RETURNING id`,
+        [merchantName]
+      );
+      merchantId = insertMerchant.rows[0].id;
+    }
+
+    // 🔹 Categorize (returns category name or ID)
+    const categoryName = await categorizeTransaction(merchantName, amount);
+
+    // 🔹 Resolve category_id (insert if new)
+    let categoryId;
+    const categoryRes = await pool.query(
+      `SELECT id FROM categories WHERE name = $1 LIMIT 1`,
+      [categoryName]
+    );
+    if (categoryRes.rows.length > 0) {
+      categoryId = categoryRes.rows[0].id;
+    } else {
+      const insertCategory = await pool.query(
+        `INSERT INTO categories (name) VALUES ($1) RETURNING id`,
+        [categoryName]
+      );
+      categoryId = insertCategory.rows[0].id;
     }
 
     // 🔹 Check for Duplicates
-    if (await isDuplicateTransaction(userId, amount, merchant, date)) {
+    const duplicate = await isDuplicateTransaction(userId, amount, merchantId, transactionDate);
+    if (duplicate) {
       return res.status(409).json({ error: "Duplicate transaction detected." });
     }
 
-    // 🔹 Categorize Transaction Using AI Model
-    const category = await categorizeTransaction(merchant, amount);
-
-    // 🔹 Add Transaction to Processing Queue (for Background Processing)
+    // 🔹 Prepare for queue
     await transactionQueue.add("processTransaction", {
       userId,
       amount,
-      category,
-      merchant,
-      date,
-      type,
+      categoryId,
+      merchantId,
+      transactionDate,
+      description,
+      isUseful,
+      isRecurring: false, // Optional: add detection later
+      recurringPattern: null,
+      paymentMethod,
       source,
     });
 
@@ -89,31 +137,78 @@ const extractTransaction = async (req, res) => {
   }
 };
 
-// 🔹 Process Transaction in Queue
+// 🔹 Background Worker: Store Transaction in DB + Solana
 const processTransaction = async (job) => {
-  const { userId, amount, category, merchant, date, type, source } = job.data;
+  const {
+    userId,
+    amount,
+    categoryId,
+    merchantId,
+    transactionDate,
+    description,
+    isUseful,
+    isRecurring,
+    recurringPattern,
+    paymentMethod,
+    source,
+  } = job.data;
 
   try {
-    const transactionData = { userId, amount, category, merchant, date, type, source };
+    const transactionData = {
+      userId,
+      amount,
+      categoryId,
+      merchantId,
+      transactionDate,
+      description,
+      isUseful,
+      isRecurring,
+      recurringPattern,
+      paymentMethod,
+      source,
+    };
+
     const hash = generateHash(transactionData);
-
-    // 🔹 Store hash on Solana
     const solanaSignature = await storeOnSolana(hash);
-    if (!solanaSignature) throw new Error("Failed to store hash on Solana");
+    if (!solanaSignature) throw new Error("Solana hash store failed");
 
-    // 🔹 Insert into PostgreSQL
     await pool.query(
-      "INSERT INTO transactions (user_id, amount, category, merchant, date, type, source, solana_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-      [userId, amount, category, merchant, date, type, source, hash]
+      `INSERT INTO transactions (
+        user_id, amount, category_id, merchant_id,
+        transaction_date, description, is_useful,
+        is_recurring, recurring_pattern, payment_method,
+        source, solana_hash
+      ) VALUES (
+        $1, $2, $3, $4,
+        $5, $6, $7,
+        $8, $9, $10,
+        $11, $12
+      )`,
+      [
+        userId,
+        amount,
+        categoryId,
+        merchantId,
+        transactionDate,
+        description,
+        isUseful,
+        isRecurring,
+        recurringPattern,
+        paymentMethod,
+        source,
+        hash,
+      ]
     );
 
-    console.log("Transaction successfully stored.");
+    console.log("Transaction stored successfully.");
   } catch (error) {
-    console.error("Error processing transaction:", error);
+    console.error("Error in transaction worker:", error);
   }
 };
 
-// 🔹 Register Queue Processor
+// 🔹 Register Processor
 transactionQueue.process("processTransaction", processTransaction);
 
-module.exports = { extractTransaction };
+module.exports = {
+  extractTransaction,
+};
