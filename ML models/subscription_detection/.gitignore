@@ -1,0 +1,17 @@
+# Python virtual environment
+.venv/
+
+# Cache and pyc files
+__pycache__/
+*.py[cod]
+
+# Jupyter and logs
+.ipynb_checkpoints/
+*.log
+
+# Data and model files (if large)
+*.csv
+*.tsv
+*.h5
+*.pkl
+*.pt

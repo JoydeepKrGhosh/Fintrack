@@ -1,0 +1,16 @@
+# Core dependencies
+pandas
+scikit-learn
+joblib
+
+# Text processing
+numpy
+scipy
+
+# Model and vectorizer
+nltk
+
+# API dependencies
+fastapi
+uvicorn
+pydantic
