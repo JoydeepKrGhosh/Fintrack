@@ -12,6 +12,7 @@
   "dependencies": {
     "@solana/spl-memo": "^0.2.5",
     "@solana/web3.js": "^1.43.0",
+    "bcryptjs": "^3.0.2",
     "bs58": "^4.0.1",
     "bullmq": "^5.48.1",
     "crypto": "^1.0.1",
