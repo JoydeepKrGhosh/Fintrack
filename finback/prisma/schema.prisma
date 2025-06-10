@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model categories {
+  id           Int            @id @default(autoincrement())
+  name         String         @unique @db.VarChar(50)
+  transactions transactions[]
+}
+
+model debt_simulations {
+  simulation_id    Int          @id @default(autoincrement())
+  user_id          Int?
+  debts            Json
+  monthly_payment  Decimal      @db.Decimal(12, 2)
+  avalanche_result Json
+  snowball_result  Json
+  created_at       DateTime?    @default(now()) @db.Timestamp(6)
+  users_debts      users_debts? @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model debts {
+  debt_id         Int          @id @default(autoincrement())
+  user_id         Int?
+  name            String       @db.VarChar(255)
+  balance         Decimal      @db.Decimal(12, 2)
+  interest_rate   Decimal      @db.Decimal(5, 2)
+  minimum_payment Decimal      @db.Decimal(12, 2)
+  created_at      DateTime?    @default(now()) @db.Timestamp(6)
+  users_debts     users_debts? @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model merchants {
+  id           Int            @id @default(autoincrement())
+  name         String         @unique @db.VarChar(100)
+  transactions transactions[]
+}
+
+model playing_with_neon {
+  id    Int    @id @default(autoincrement())
+  name  String
+  value Float? @db.Real
+}
+
+model transaction_metadata {
+  transaction_id    Int          @id
+  is_debt           Boolean?     @default(false)
+  is_subscription   Boolean?     @default(false)
+  debt_type         String?      @db.VarChar(20)
+  subscription_type String?      @db.VarChar(20)
+  interest_rate     Decimal?     @db.Decimal(5, 2)
+  due_date          DateTime?    @db.Date
+  created_at        DateTime?    @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?    @default(now()) @db.Timestamp(6)
+  transactions      transactions @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model transactions {
+  id                   Int                   @id @default(autoincrement())
+  user_id              Int?
+  amount               Decimal               @db.Decimal(10, 2)
+  category_id          Int?
+  merchant_id          Int?
+  transaction_date     DateTime?             @default(now()) @db.Timestamp(6)
+  description          String?
+  is_useful            Boolean?              @default(true)
+  is_recurring         Boolean?              @default(false)
+  recurring_pattern    String?               @db.VarChar(50)
+  payment_method       String?               @default("UPI") @db.VarChar(50)
+  source               String?               @default("manual") @db.VarChar(20)
+  solana_hash          String?
+  transaction_metadata transaction_metadata?
+  categories           categories?           @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  merchants            merchants?            @relation(fields: [merchant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users                users?                @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model users {
+  id            Int            @id @default(autoincrement())
+  name          String         @db.VarChar(100)
+  email         String         @unique @db.VarChar(100)
+  created_at    DateTime?      @default(now()) @db.Timestamp(6)
+  mobile_number String         @unique @db.Char(10)
+  transactions  transactions[]
+}
+
+model users_debts {
+  user_id          Int                @id @default(autoincrement())
+  email            String             @unique @db.VarChar(255)
+  created_at       DateTime?          @default(now()) @db.Timestamp(6)
+  debt_simulations debt_simulations[]
+  debts            debts[]
+}

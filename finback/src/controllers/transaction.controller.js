@@ -1,4 +1,5 @@
-const pool = require("../config/db");
+const prisma = require("../../prisma-client");
+
 const {
   Connection,
   Keypair,
@@ -26,12 +27,17 @@ const generateHash = (transactionData) => {
 
 // 🔹 Check for Duplicate Transactions
 const isDuplicateTransaction = async (userId, amount, merchantId, transactionDate) => {
-  const result = await pool.query(
-    `SELECT * FROM transactions WHERE user_id = $1 AND amount = $2 AND merchant_id = $3 AND transaction_date = $4`,
-    [userId, amount, merchantId, transactionDate]
-  );
-  return result.rows.length > 0;
+  const existing = await prisma.transaction.findFirst({
+    where: {
+      userId,
+      amount,
+      merchantId,
+      transactionDate,
+    },
+  });
+  return !!existing;
 };
+
 
 // 🔹 Store Hash on Solana
 const storeOnSolana = async (hash) => {
@@ -74,57 +80,37 @@ const extractTransaction = async (req, res) => {
       return res.status(400).json({ error: "Amount, merchant, and date are required." });
     }
 
-    // 🔹 Resolve merchant_id (insert if new)
-    let merchantId;
-    const merchantRes = await pool.query(
-      `SELECT id FROM merchants WHERE name = $1 LIMIT 1`,
-      [merchantName]
-    );
-    if (merchantRes.rows.length > 0) {
-      merchantId = merchantRes.rows[0].id;
-    } else {
-      const insertMerchant = await pool.query(
-        `INSERT INTO merchants (name) VALUES ($1) RETURNING id`,
-        [merchantName]
-      );
-      merchantId = insertMerchant.rows[0].id;
+    // 🔹 Resolve merchant
+    let merchant = await prisma.merchant.findFirst({ where: { name: merchantName } });
+    if (!merchant) {
+      merchant = await prisma.merchant.create({ data: { name: merchantName } });
     }
 
-    // 🔹 Categorize (returns category name or ID)
+    // 🔹 Categorize
     const categoryName = await categorizeTransaction(merchantName, amount);
 
-    // 🔹 Resolve category_id (insert if new)
-    let categoryId;
-    const categoryRes = await pool.query(
-      `SELECT id FROM categories WHERE name = $1 LIMIT 1`,
-      [categoryName]
-    );
-    if (categoryRes.rows.length > 0) {
-      categoryId = categoryRes.rows[0].id;
-    } else {
-      const insertCategory = await pool.query(
-        `INSERT INTO categories (name) VALUES ($1) RETURNING id`,
-        [categoryName]
-      );
-      categoryId = insertCategory.rows[0].id;
+    // 🔹 Resolve category
+    let category = await prisma.category.findFirst({ where: { name: categoryName } });
+    if (!category) {
+      category = await prisma.category.create({ data: { name: categoryName } });
     }
 
-    // 🔹 Check for Duplicates
-    const duplicate = await isDuplicateTransaction(userId, amount, merchantId, transactionDate);
+    // 🔹 Duplicate check
+    const duplicate = await isDuplicateTransaction(userId, amount, merchant.id, transactionDate);
     if (duplicate) {
       return res.status(409).json({ error: "Duplicate transaction detected." });
     }
 
-    // 🔹 Prepare for queue
+    // 🔹 Queue background job
     await transactionQueue.add("processTransaction", {
       userId,
       amount,
-      categoryId,
-      merchantId,
+      categoryId: category.id,
+      merchantId: merchant.id,
       transactionDate,
       description,
       isUseful,
-      isRecurring: false, // Optional: add detection later
+      isRecurring: false,
       recurringPattern: null,
       paymentMethod,
       source,
@@ -136,6 +122,7 @@ const extractTransaction = async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
 
 // 🔹 Background Worker: Store Transaction in DB + Solana
 const processTransaction = async (job) => {
@@ -172,39 +159,19 @@ const processTransaction = async (job) => {
     const solanaSignature = await storeOnSolana(hash);
     if (!solanaSignature) throw new Error("Solana hash store failed");
 
-    await pool.query(
-      `INSERT INTO transactions (
-        user_id, amount, category_id, merchant_id,
-        transaction_date, description, is_useful,
-        is_recurring, recurring_pattern, payment_method,
-        source, solana_hash
-      ) VALUES (
-        $1, $2, $3, $4,
-        $5, $6, $7,
-        $8, $9, $10,
-        $11, $12
-      )`,
-      [
-        userId,
-        amount,
-        categoryId,
-        merchantId,
-        transactionDate,
-        description,
-        isUseful,
-        isRecurring,
-        recurringPattern,
-        paymentMethod,
-        source,
-        hash,
-      ]
-    );
+    await prisma.transaction.create({
+      data: {
+        ...transactionData,
+        solanaHash: hash,
+      },
+    });
 
     console.log("Transaction stored successfully.");
   } catch (error) {
     console.error("Error in transaction worker:", error);
   }
 };
+
 
 // 🔹 Register Processor
 transactionQueue.process("processTransaction", processTransaction);
