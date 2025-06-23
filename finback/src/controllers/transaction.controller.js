@@ -1,181 +1,202 @@
-const prisma = require("../prisma-client");
+// ✅ Required imports
+const { PrismaClient } = require('@prisma/client');
+const logger = require('../utils/logger.js');
+const { validateInput, extractAmount } = require('../utils/transaction_process_utils/transactionValidators');
+const { processMerchant } = require('../utils/transaction_process_utils/merchantProcessor');
+const { checkForDuplicates } = require('../utils/transaction_process_utils/duplicateChecker');
+const { queueTransactionProcessing, retryMatchLater } = require('../utils/transaction_process_utils/queueService');
+const { createTransaction } = require('../utils/transaction_process_utils/transactionService.js');
+const { extractProductNames } = require('../utils/transaction_process_utils/emailHelpers.js');
+const { findPotentialMatch } = require('../utils/transaction_process_utils/transactionMatcher.js');
+const { extractTransactionType, extractPaymentMode } = require('../utils/transaction_process_utils/transactionTypeMode.js');
 
-const {
-  Connection,
-  Keypair,
-  Transaction,
-  SystemProgram,
-  sendAndConfirmTransaction,
-} = require("@solana/web3.js");
-const crypto = require("crypto");
-const { categorizeTransaction } = require("../utils/aiClassifier");
-const { transactionQueue } = require("../queues/transactionQueue");
-require("dotenv").config();
-
-// 🔹 Solana Setup
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const connection = new Connection(SOLANA_RPC_URL, "confirmed");
-
-// 🔹 Load Solana Wallet Keypair Securely
-const secretKey = Uint8Array.from(JSON.parse(process.env.SOLANA_SECRET_KEY));
-const payer = Keypair.fromSecretKey(secretKey);
-
-// 🔹 Hash Function
-const generateHash = (transactionData) => {
-  return crypto.createHash("sha256").update(JSON.stringify(transactionData)).digest("hex");
-};
-
-// 🔹 Check for Duplicate Transactions
-const isDuplicateTransaction = async (userId, amount, merchantId, transactionDate) => {
-  const existing = await prisma.transaction.findFirst({
-    where: {
-      userId,
-      amount,
-      merchantId,
-      transactionDate,
-    },
-  });
-  return !!existing;
-};
+const prisma = new PrismaClient();
 
 
-// 🔹 Store Hash on Solana
-const storeOnSolana = async (hash) => {
+// Matching configuration constants
+const MATCH_WINDOW_MINUTES = 10; // Time window for email↔SMS matching in minutes
+
+// Basic metric logger
+function recordMetric(metricName, data = {}) {
+  console.log(`[METRIC] ${metricName}:`, data);
+  // Optionally send to external monitoring platforms
+}
+
+
+
+async function extractTransaction(req, res) {
+  const { rawText, sourceType, senderInfo, userId } = req.body;
+  const txLogger = logger.withTransaction('pending');
+  txLogger.info('📥 Incoming transaction request received', { rawText, sourceType, senderInfo, userId });
+
+  const startTime = Date.now();
+  if (!validateInput(res, txLogger, rawText, sourceType, userId)) return;
+
   try {
-    const transaction = new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: payer.publicKey,
-        toPubkey: payer.publicKey,
-        lamports: 0,
-      })
-    );
-    transaction.add(Buffer.from(hash, "utf-8")); // Attach metadata
+    const { amount, error: amountError } = extractAmount(rawText, txLogger);
+    txLogger.debug('Amount extraction result', { amount, amountError });
+    if (amountError) return res.status(400).json(amountError);
 
-    const signature = await sendAndConfirmTransaction(connection, transaction, [payer]);
-    console.log("Stored Hash on Solana:", signature);
-    return signature;
-  } catch (error) {
-    console.error("Error storing hash on Solana:", error);
-    return null;
-  }
-};
+    const transactionDate = new Date();
+    const isEmail = sourceType === 'email';
+    let productNames = isEmail ? extractProductNames(rawText) : [];
 
-// 🔹 Extracted Transaction API (SMS/Email/Manual)
-const extractTransaction = async (req, res) => {
-  try {
-    const {
-      amount,
-      merchantName,
-      date,
-      description = "",
-      source = "sms",
-      paymentMethod = "UPI",
-      isUseful = true,
-    } = req.body;
+    const transactionType = extractTransactionType(rawText); // Credit or Debit
+    const paymentMode = extractPaymentMode(rawText); // UPI, Card, etc.
 
-    const userId = req.user.userId;
-    const transactionDate = new Date(date);
-
-    if (!amount || !merchantName || !date) {
-      return res.status(400).json({ error: "Amount, merchant, and date are required." });
+    const { merchantRecord, merchantError } = await processMerchant(rawText, senderInfo, txLogger);
+    txLogger.debug('Merchant record received', merchantRecord);
+    if (merchantError) {
+      txLogger.error('❌ Merchant processing failed', merchantError);
+      return res.status(merchantError.status).json(merchantError);
     }
 
-    // 🔹 Resolve merchant
-    let merchant = await prisma.merchant.findFirst({ where: { name: merchantName } });
-    if (!merchant) {
-      merchant = await prisma.merchant.create({ data: { name: merchantName } });
+    let isDuplicate = false;
+    try {
+      isDuplicate = await checkForDuplicates(userId, amount, merchantRecord, transactionDate,sourceType, txLogger);
+      txLogger.debug('[TX:pending] 🔎 Duplicate check result', { isDuplicate });
+      if (isDuplicate) {
+        txLogger.warn('[TX:pending] Duplicate transaction detected');
+        return res.status(409).json({
+          error: 'Duplicate transaction detected',
+          resolution: 'Try again after 10 minutes'
+        });
+      }
+    } catch (err) {
+      txLogger.error('[TX:pending] ❌ Error during duplicate check', {
+        message: err.message,
+        stack: err.stack
+      });
+      return res.status(500).json({
+        error: 'Internal error during duplicate check',
+        referenceId: `ERR-DUP-${Date.now()}`
+      });
     }
 
-    // 🔹 Categorize
-    const categoryName = await categorizeTransaction(merchantName, amount);
-
-    // 🔹 Resolve category
-    let category = await prisma.category.findFirst({ where: { name: categoryName } });
-    if (!category) {
-      category = await prisma.category.create({ data: { name: categoryName } });
-    }
-
-    // 🔹 Duplicate check
-    const duplicate = await isDuplicateTransaction(userId, amount, merchant.id, transactionDate);
-    if (duplicate) {
-      return res.status(409).json({ error: "Duplicate transaction detected." });
-    }
-
-    // 🔹 Queue background job
-    await transactionQueue.add("processTransaction", {
+    const matchedTxn = await findPotentialMatch({
       userId,
+      merchantId: merchantRecord.id,
       amount,
-      categoryId: category.id,
-      merchantId: merchant.id,
-      transactionDate,
-      description,
-      isUseful,
-      isRecurring: false,
-      recurringPattern: null,
-      paymentMethod,
-      source,
+      timestamp: transactionDate,
+      sourceType
     });
 
-    res.status(202).json({ message: "Transaction is being processed." });
-  } catch (error) {
-    console.error("Error extracting transaction:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
+    txLogger.debug('🔍 matchedTxn value', { matchedTxn });
 
+    if (matchedTxn) {
+      try {
+        await prisma.transactionMetadata.upsert({
+          where: { transactionId: matchedTxn.id },
+          update: {
+            productDetails: productNames.join(', '),
+            transactionType,
+            paymentMode,
+            matchStatus: 'MATCHED',
+            matchExpiresAt: null
+          },
+          create: {
+            transactionId: matchedTxn.id,
+            productDetails: productNames.join(', '),
+            transactionType,
+            paymentMode,
+            matchStatus: 'MATCHED'
+          }
+        });
+        txLogger.info('✅ Metadata updated/upserted successfully');
+      } catch (metaErr) {
+        txLogger.error('❌ Failed to update metadata', { error: metaErr.message, stack: metaErr.stack });
+      }
 
-// 🔹 Background Worker: Store Transaction in DB + Solana
-const processTransaction = async (job) => {
-  const {
-    userId,
-    amount,
-    categoryId,
-    merchantId,
-    transactionDate,
-    description,
-    isUseful,
-    isRecurring,
-    recurringPattern,
-    paymentMethod,
-    source,
-  } = job.data;
+      const latency = Date.now() - startTime;
+      recordMetric('match_attempts', { success: true });
+      recordMetric('match_latency', latency);
+      recordMetric('source_type_analysis', sourceType);
 
-  try {
-    const transactionData = {
-      userId,
-      amount,
-      categoryId,
-      merchantId,
-      transactionDate,
-      description,
-      isUseful,
-      isRecurring,
-      recurringPattern,
-      paymentMethod,
-      source,
-    };
+      txLogger.info('🔁 Matched to existing transaction. Enqueueing enriched transaction.', {
+        transactionId: matchedTxn.id
+      });
 
-    const hash = generateHash(transactionData);
-    const solanaSignature = await storeOnSolana(hash);
-    if (!solanaSignature) throw new Error("Solana hash store failed");
+      await queueTransactionProcessing(matchedTxn, txLogger);
 
-    await prisma.transaction.create({
+      return res.status(202).json({
+        message: 'Matched and enriched transaction.',
+        transactionId: matchedTxn.id
+      });
+    }
+
+    let transaction;
+    try {
+      const result = await createTransaction({
+        userId,
+        rawText,
+        amount,
+        merchantId: merchantRecord.id,
+        transactionDate,
+        sourceType,
+        senderInfo
+      }, txLogger);
+
+      transaction = result.transaction;
+      txLogger.debug('Transaction creation result', result);
+
+      if (result.creationError) {
+        txLogger.error('❌ Transaction creation failed', result.creationError);
+        return res.status(500).json(result.creationError);
+      }
+    } catch (creationException) {
+      txLogger.error('❌ Exception during transaction creation', {
+        message: creationException.message,
+        stack: creationException.stack
+      });
+      return res.status(500).json({
+        error: 'Exception during transaction creation',
+        referenceId: `ERR-CREATE-${Date.now()}`
+      });
+    }
+
+    const matchExpiresAt = new Date(Date.now() + MATCH_WINDOW_MINUTES * 60 * 1000);
+
+    await prisma.transactionMetadata.create({
       data: {
-        ...transactionData,
-        solanaHash: hash,
-      },
+        transactionId: transaction.id,
+        productDetails: isEmail ? productNames.join(', ') : null,
+        matchStatus: 'PENDING',
+        matchExpiresAt,
+        transactionType,
+        paymentMode
+      }
     });
 
-    console.log("Transaction stored successfully.");
+    txLogger.info('📝 Metadata created for new transaction', {
+      transactionId: transaction.id,
+      transactionType,
+      paymentMode
+    });
+
+    await retryMatchLater(transaction, txLogger);
+
+
+    recordMetric('match_attempts', { success: false });
+    recordMetric('source_type_analysis', sourceType);
+
+    return res.status(202).json({
+      message: 'Transaction accepted for processing',
+      transactionId: transaction.id,
+      nextSteps: {
+        checkStatus: `/api/transactions/${transaction.id}/status`,
+        typicalProcessingTime: '2-5 minutes'
+      }
+    });
   } catch (error) {
-    console.error("Error in transaction worker:", error);
+    txLogger.error('Transaction processing failed', {
+      error: error.message,
+      stack: error.stack
+    });
+    return res.status(500).json({
+      error: 'Internal server error',
+      referenceId: `ERR-${Date.now()}`
+    });
   }
-};
+}
 
-
-// 🔹 Register Processor
-transactionQueue.process("processTransaction", processTransaction);
-
-module.exports = {
-  extractTransaction,
-};
+module.exports = { extractTransaction };
