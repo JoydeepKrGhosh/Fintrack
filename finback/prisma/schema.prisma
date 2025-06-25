@@ -15,7 +15,7 @@ model Category {
 
 model DebtSimulation {
   id              Int      @id @default(autoincrement())
-  userId          String? // Changed from Int? to String?
+  userId          String?
   debts           Json
   monthlyPayment  Decimal  @db.Decimal(12, 2)
   avalancheResult Json
@@ -26,7 +26,7 @@ model DebtSimulation {
 
 model Debt {
   id             Int      @id @default(autoincrement())
-  userId         String? // Changed from Int? to String?
+  userId         String?
   name           String   @db.VarChar(255)
   balance        Decimal  @db.Decimal(12, 2)
   interestRate   Decimal  @db.Decimal(5, 2)
@@ -36,11 +36,11 @@ model Debt {
 }
 
 model Merchant {
-  id          Int           @id @default(autoincrement())
-  name        String        @unique
-  normalizedName String     @unique // "SWIGGY*1234" → "swiggy"
-  category    String?
-  transactions Transaction[]
+  id             Int           @id @default(autoincrement())
+  name           String        @unique
+  normalizedName String        @unique
+  category       String?
+  transactions   Transaction[]
 }
 
 model PlayingWithNeon {
@@ -51,36 +51,27 @@ model PlayingWithNeon {
 
 model TransactionMetadata {
   id               String      @id @default(uuid())
-  transaction      Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   transactionId    String      @unique
-
-  // New fields based on logic
-  productDetails   String?     @db.Text
-  transactionType  String?     @db.VarChar(10) // 'DEBIT', 'CREDIT', 'UNKNOWN'
-  paymentMode      String?     @db.VarChar(20) // 'UPI', 'CREDIT_CARD', etc.
-
-  // Matching enhancements
-  matchStatus      String?     @default("PENDING") // 'MATCHED', 'PENDING', 'UNMATCHED'
-  matchExpiresAt   DateTime?   // For retry expiration window
-
-  // Debt & subscription analysis
+  productDetails   String?
+  transactionType  String?     @db.VarChar(10)
+  paymentMode      String?     @db.VarChar(20)
+  matchStatus      String?     @default("PENDING")
+  matchExpiresAt   DateTime?
   isDebt           Boolean?    @default(false)
   isSubscription   Boolean?    @default(false)
   debtType         String?     @db.VarChar(30)
   subscriptionType String?     @db.VarChar(30)
   interestRate     Decimal?    @db.Decimal(5, 2)
   dueDate          DateTime?
-
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
+  transaction      Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 }
-
 
 model Transaction {
   id              String               @id @default(uuid())
-  user            User                 @relation(fields: [userId], references: [id])
   userId          String
-  rawText         String               @db.Text
+  rawText         String
   extractedAmount Decimal              @db.Decimal(10, 2)
   currency        String               @default("INR") @db.VarChar(3)
   transactionDate DateTime
@@ -92,18 +83,25 @@ model Transaction {
   solanaTxHash    String?              @db.VarChar(64)
   receivedAt      DateTime             @default(now())
   updatedAt       DateTime             @default(now()) @updatedAt
-  metadata        TransactionMetadata?
-  category        Category?            @relation(fields: [categoryId], references: [id])
   categoryId      Int?
-
-  // ✅ Relational Merchant
-  merchant        Merchant?            @relation(fields: [merchantId], references: [id])
   merchantId      Int?
+  category        Category?            @relation(fields: [categoryId], references: [id])
+  merchant        Merchant?            @relation(fields: [merchantId], references: [id])
+  user            User                 @relation(fields: [userId], references: [id])
+  metadata        TransactionMetadata?
 
   @@index([userId, isProcessed])
   @@index([userId, transactionDate])
 }
 
+model Token {
+  id                String @id @default(uuid())
+  userId            String @unique
+  user              User   @relation(fields: [userId], references: [id])
+  accessToken       String
+  refreshToken      String
+  accessTokenExpiry BigInt
+}
 
 model User {
   id                      String                   @id @default(uuid())
@@ -111,17 +109,18 @@ model User {
   email                   String                   @unique @db.VarChar(100)
   createdAt               DateTime                 @default(now())
   mobileNumber            String                   @unique @db.Char(10)
-  transactions            Transaction[]
+  googleId                String                   @unique
   debts                   Debt[]
   debtSimulations         DebtSimulation[]
   financialScoreSnapshots FinancialScoreSnapshot[]
+  transactions            Transaction[]
   userDebts               UserDebt[]
+  Token                   Token?
 }
 
 model UserDebt {
   id                Int      @id @default(autoincrement())
   userId            String
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   loanType          String
   monthlyEmi        Float
   outstandingAmount Float
@@ -130,12 +129,12 @@ model UserDebt {
   tenureMonths      Int
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model FinancialScoreSnapshot {
   id                Int        @id @default(autoincrement())
   userId            String
-  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   financialScore    Int
   savingsRate       Decimal    @db.Decimal(5, 4)
   debtToIncomeRatio Decimal    @db.Decimal(5, 4)
@@ -153,6 +152,7 @@ model FinancialScoreSnapshot {
   periodStart       DateTime
   periodEnd         DateTime
   createdAt         DateTime   @default(now())
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([periodStart, periodEnd])
