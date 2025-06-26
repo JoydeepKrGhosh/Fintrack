@@ -1,71 +1,94 @@
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const prisma = require("../prisma-client");
+const { google } = require('googleapis');
+const jwt = require('jsonwebtoken');
+const prisma = require('../prisma-client'); // Adjust path to your Prisma instance
+require('dotenv').config();
 
-// User Signup
-const signup = async (req, res) => {
-  const { name, email, password } = req.body;
+
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_WEB_CLIENT_ID,
+  process.env.GOOGLE_WEB_CLIENT_SECRET,
+);
+
+exports.googleAuthController = async (req, res) => {
+  const { code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ error: 'Missing authorization code' });
+  }
 
   try {
-    // Check if email already exists
-    const existingUser = await prisma.users.findUnique({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ error: "Email already registered" });
+    // 1. Exchange code for access + refresh tokens
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    if (!tokens.access_token || !tokens.refresh_token) {
+      return res.status(400).json({ error: 'Failed to retrieve access and refresh tokens' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = await prisma.users.create({
-      data: {
+    // 2. Fetch user profile info using Gmail OAuth
+    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+    const { data: profile } = await oauth2.userinfo.get();
+
+    console.log('Google Profile:', profile);
+
+    const { email, name, id: googleId } = profile;
+
+    if (!email || !googleId) {
+      return res.status(400).json({ error: 'Incomplete Google profile data' });
+    }
+
+    // 3. Create or update user
+    const user = await prisma.user.upsert({
+      where: { email },
+      update: {
         name,
-        email,
-        password: hashedPassword,
+        googleId,
       },
-      select: {
-        id: true,
-        name: true,
-        email: true,
+      create: {
+        email,
+        name,
+        googleId,
+        mobileNumber: '', // Replace this as needed (use client-provided or generate)
       },
     });
 
-    res.status(201).json({ message: "User registered successfully", user: newUser });
-  } catch (error) {
-    console.error("Signup error:", error);
-    res.status(500).json({ error: "Signup failed" });
-  }
-};
+    console.log('User Info:', user);
+    if (!user) {
+      return res.status(500).json({ error: 'Failed to create or update user' });
+    }
 
-// User Login
-const login = async (req, res) => {
-  const { email, password } = req.body;
+    // 4. Store tokens in a separate table (Token model)
+    await prisma.token.upsert({
+      where: { userId: user.id },
+      update: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        accessTokenExpiry: BigInt(Date.now() + (tokens.expires_in || 3600) * 1000),
+      },
+      create: {
+        userId: user.id,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        accessTokenExpiry: BigInt(Date.now() + (tokens.expires_in || 3600) * 1000),
+      },
+    });
 
-  try {
-    const user = await prisma.users.findUnique({ where: { email } });
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    console.log('Tokens stored successfully');
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
-
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: "7d" });
-
-    res.json({
-      message: "Login successful",
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
+    // 5. Issue your app's JWT
+    const jwtToken = jwt.sign(
+      {
+        userId: user.id,
         email: user.email,
       },
-    });
-  } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ error: "Login failed" });
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    return res.status(200).json({ token: jwtToken });
+  } catch (err) {
+    console.log('Google Sign-In error:', err);
+    return res.status(500).json({ error: 'Google sign-in failed' });
   }
 };
-
-// Logout (Handled client-side)
-const logout = async (req, res) => {
-  res.json({ message: "Logout successful" });
-};
-
-module.exports = { signup, login, logout };

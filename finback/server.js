@@ -11,8 +11,7 @@ const express = require("express");
 require("dotenv").config();
 const { PrismaClient } = require("@prisma/client"); // ✅ Import Prisma Client
 const authRoutes = require("./src/routes/auth.route.js");
-
-
+const fetchGmailRoutes = require('./src/routes/gmailFetchRoute.js')
 const { transactionWorker } = require('./src/workers/transactionProcessor.js');
 
 const transactionRoutes = require('./src/routes/transactionroutes.js');
@@ -26,12 +25,13 @@ if (process.env.NODE_ENV !== 'test') transactionWorker;
 // Routes
 app.use("/api/auth", authRoutes);
 app.use('/api/transactions', transactionRoutes);
+app.use('/api', fetchGmailRoutes);
 
 // Start the server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
-
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
+  require('./cron/gmailCron');
   try {
     // ✅ Prisma automatically handles tables via migrations
     await prisma.$connect(); // Test DB connection
