@@ -49,7 +49,7 @@ exports.googleAuthController = async (req, res) => {
         email,
         name,
         googleId,
-        mobileNumber: '9999999990', // Replace this as needed (use client-provided or generate)
+        mobileNumber: '', // Replace this as needed (use client-provided or generate)
       },
     });
 

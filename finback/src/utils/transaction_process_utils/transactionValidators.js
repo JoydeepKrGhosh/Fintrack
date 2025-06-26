@@ -25,7 +25,8 @@ function validateInput(res, logger, rawText, sourceType, userId) {
 }
 
 function extractAmount(rawText, logger) {
-  const amountMatch = rawText.match(/INR\s*([\d,]+\.\d{2})|Rs\.?\s*([\d,]+)/i);
+  const amountMatch = rawText.match(/(?:₹|INR|Rs\.?)\s*([\d,]+\.\d{2}|\d+)/i);
+
   const amountValue = amountMatch?.[1] || amountMatch?.[2];
 
   if (!amountValue) {

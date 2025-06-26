@@ -97,10 +97,10 @@ model Transaction {
 model Token {
   id                String @id @default(uuid())
   userId            String @unique
-  user              User   @relation(fields: [userId], references: [id])
   accessToken       String
   refreshToken      String
   accessTokenExpiry BigInt
+  user              User   @relation(fields: [userId], references: [id])
 }
 
 model User {
@@ -108,14 +108,15 @@ model User {
   name                    String                   @db.VarChar(100)
   email                   String                   @unique @db.VarChar(100)
   createdAt               DateTime                 @default(now())
-  mobileNumber            String                   @unique @db.Char(10)
+  mobileNumber            String?                  @unique @db.Char(10)
   googleId                String                   @unique
+  lastGmailHistoryId      String?
   debts                   Debt[]
   debtSimulations         DebtSimulation[]
   financialScoreSnapshots FinancialScoreSnapshot[]
+  Token                   Token?
   transactions            Transaction[]
   userDebts               UserDebt[]
-  Token                   Token?
 }
 
 model UserDebt {

@@ -43,6 +43,7 @@ function authMiddleware(req, res, next) {
       next();
     });
   } else {
+    console.log('No token provided or invalid format');
     res.sendStatus(401);
   }
 }
