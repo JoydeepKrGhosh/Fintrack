@@ -35,10 +35,20 @@ function extractProductNames(rawText) {
     productNames.push(...items);
   }
 
-  // ✅ 3. Handle "Items: X, Y" inline in single-line emails
+  // 3. Inline "Items: X, Y"
   const itemsInline = rawText.match(/items\s*[:\-]\s*(.+?)\s*(\.|Expected|Delivered|$)/i);
   if (itemsInline && itemsInline[1]) {
     const items = itemsInline[1]
+      .split(/,| and /i)
+      .map(x => x.trim())
+      .filter(x => x.length > 2);
+    productNames.push(...items);
+  }
+
+  // ✅ 4. New: Handle "order of X worth Rs..." (Amazon style)
+  const worthMatch = rawText.match(/order\s+(?:for|of)\s+(.+?)\s+worth\s+/i);
+  if (worthMatch && worthMatch[1]) {
+    const items = worthMatch[1]
       .split(/,| and /i)
       .map(x => x.trim())
       .filter(x => x.length > 2);

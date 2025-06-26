@@ -2,16 +2,19 @@
 
 const TRANSACTION_TYPE_PATTERNS = {
   DEBIT: [
-    /debited/, /purchased/, /spent/, /charged/, 
-    /payment to/, /sent to/, /paid to/,/paid/i,
-    /withdrawal/,/payment of/, /dr\b/i
+    /debited/, /purchased?/, /spent/, /charged/,
+    /payment to/, /sent to/, /paid to/, /paid/i,
+    /withdrawal/, /payment of/, /dr\b/i,
+    /purchase(?: of)?/i, // ✅ handles "purchase of Rs. X"
+    /used for a purchase/i // ✅ handles "used for a purchase"
   ],
   CREDIT: [
     /credited/, /received/, /refund/, /deposit/,
-    /money added/, /cashback/, /reward/, 
+    /money added/, /cashback/, /reward/,
     /reversed/, /cr\b/i, /interest earned/
   ]
 };
+
 
 const PAYMENT_MODE_PATTERNS = {
   UPI: [/upi/i, /vpa/i, /@[a-z0-9]+/, /qr/i],
