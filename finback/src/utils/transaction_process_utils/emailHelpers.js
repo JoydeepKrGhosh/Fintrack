@@ -1,61 +1,67 @@
-// utils/emailHelpers.js
 function extractProductNames(rawText) {
   if (!rawText || typeof rawText !== 'string') return [];
 
   const productNames = [];
 
-  // 1. Line-based patterns (short lines only)
-  const structuredLines = rawText
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line =>
-      line.length < 100 && ( // avoid matching full single-line emails
-        /^\d+\.\s/.test(line) ||
-        /Item[s]?\s*[:\-]/i.test(line) ||
-        /Product[s]?\s*[:\-]/i.test(line)
-      )
-    );
+  // Normalize the text by replacing common variations
+  const normalizedText = rawText
+    .replace(/\s+/g, ' ') // collapse multiple spaces
+    .replace(/[:\-]\s+/g, ': ') // standardize colon formatting
+    .replace(/\s+[:\-]/g, ': ');
 
-  for (const line of structuredLines) {
-    const cleaned = line
-      .replace(/^\d+\.\s*/, '')
-      .replace(/^(Product|Item|Items|Products)\s*[:\-]\s*/i, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-    if (cleaned.length > 2) productNames.push(cleaned);
-  }
-
-  // 2. Inline "order for X, Y and Z"
-  const inlineMatch = rawText.match(/order\s+(?:for|of)\s+([\w\s,\.\-&]+?)\s+(?:is|has been)?\s*(?:confirmed|placed|dispatched)/i);
-  if (inlineMatch && inlineMatch[1]) {
-    const items = inlineMatch[1]
+  // 1. Handle "Items Ordered: X, Y" pattern (Zomato style)
+  const itemsOrderedMatch = normalizedText.match(/Items Ordered:\s*(.+?)(?:\.|\s*Payment|$)/i);
+  if (itemsOrderedMatch && itemsOrderedMatch[1]) {
+    const items = itemsOrderedMatch[1]
       .split(/,| and /i)
       .map(x => x.trim())
       .filter(x => x.length > 2);
     productNames.push(...items);
   }
 
-  // 3. Inline "Items: X, Y"
-  const itemsInline = rawText.match(/items\s*[:\-]\s*(.+?)\s*(\.|Expected|Delivered|$)/i);
-  if (itemsInline && itemsInline[1]) {
-    const items = itemsInline[1]
+  // 2. Handle "Items: X, Y" pattern
+  const itemsMatch = normalizedText.match(/Items:\s*(.+?)(?:\.|\s*Payment|$)/i);
+  if (itemsMatch && itemsMatch[1]) {
+    const items = itemsMatch[1]
       .split(/,| and /i)
       .map(x => x.trim())
       .filter(x => x.length > 2);
     productNames.push(...items);
   }
 
-  // ✅ 4. New: Handle "order of X worth Rs..." (Amazon style)
-  const worthMatch = rawText.match(/order\s+(?:for|of)\s+(.+?)\s+worth\s+/i);
-  if (worthMatch && worthMatch[1]) {
-    const items = worthMatch[1]
+  // 3. Handle "order of X, Y" pattern
+  const orderOfMatch = normalizedText.match(/order\s+(?:for|of)\s+(.+?)\s+(?:worth|is|has been|received)/i);
+  if (orderOfMatch && orderOfMatch[1]) {
+    const items = orderOfMatch[1]
       .split(/,| and /i)
       .map(x => x.trim())
       .filter(x => x.length > 2);
     productNames.push(...items);
   }
 
-  return [...new Set(productNames)];
+  // 4. Line-based patterns (for multi-line emails)
+  const lines = normalizedText.split('\n');
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    
+    // Handle numbered items (1. X, 2. Y)
+    if (/^\d+\.\s/.test(trimmedLine)) {
+      const item = trimmedLine.replace(/^\d+\.\s*/, '').trim();
+      if (item.length > 2) productNames.push(item);
+    }
+    
+    // Handle "Item(s): X" pattern in lines
+    const lineItemsMatch = trimmedLine.match(/^Item[s]?:\s*(.+)/i);
+    if (lineItemsMatch && lineItemsMatch[1]) {
+      const items = lineItemsMatch[1]
+        .split(/,| and /i)
+        .map(x => x.trim())
+        .filter(x => x.length > 2);
+      productNames.push(...items);
+    }
+  }
+
+  return [...new Set(productNames)]; // Remove duplicates
 }
 
 module.exports = { extractProductNames };

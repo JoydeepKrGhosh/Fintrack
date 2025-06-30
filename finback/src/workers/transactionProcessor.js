@@ -2,8 +2,10 @@ const { Worker } = require("bullmq");
 const Redis = require("ioredis");
 const { storeOnSolana } = require("../utils/solana");
 const { generateHash } = require("../utils/hashUtils");
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient, Prisma } = require("@prisma/client");
+const { callMLService } = require("../service/mlService");
 const logger = require("../utils/logger");
+const dayjs = require("dayjs");
 
 const redisConnection = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -33,7 +35,8 @@ const worker = new Worker(
 
     try {
       const transaction = await prisma.transaction.findUnique({
-        where: { id: transactionId }
+        where: { id: transactionId },
+        include: { merchant: true } // include merchant name if available
       });
 
       if (!transaction) {
@@ -45,18 +48,66 @@ const worker = new Worker(
         return;
       }
 
-      // Step 1: Generate hash
+      // 🧠 ML Categorization
+      const merchant = transaction.merchant?.name || "";
+      const product = transaction.productName || "";
+      const mlText = product ? `${merchant} ${product}` : merchant;
+
+      let predictedCategory = null;
+      try {
+        predictedCategory = await callMLService(mlText);
+        txLogger.info("🧠 Predicted category", { mlText, predictedCategory });
+      } catch (mlErr) {
+        txLogger.warn("⚠️ ML call failed", { mlText, error: mlErr.message });
+      }
+
+      // 🧾 Fetch and update TransactionMetadata
+      const metadata = await prisma.transactionMetadata.findUnique({
+        where: { transactionId }
+      });
+
+      // Update Transaction with predicted category
+if (predictedCategory) {
+  await prisma.transaction.update({
+    where: { id: transactionId },
+    data: {
+      category: predictedCategory,
+      updatedAt: new Date()
+    }
+  });
+  txLogger.info("📝 Updated transaction with category", { category: predictedCategory });
+}
+
+      if (metadata) {
+        const isCreditCard = metadata.paymentMode?.toLowerCase().includes("credit");
+
+        const updateMetadata = {
+          isDebt: isCreditCard || false,
+          interestRate: isCreditCard ? new Prisma.Decimal(2.5) : undefined,
+          dueDate: isCreditCard ? dayjs().add(45, 'days').toDate() : undefined,
+          updatedAt: new Date()
+        };
+
+        await prisma.transactionMetadata.update({
+          where: { transactionId },
+          data: updateMetadata
+        });
+
+        txLogger.info("📝 Updated transaction metadata", updateMetadata);
+      }
+
+      // 🔑 Step 1: Generate hash
       txLogger.info("🔑 Generating hash...");
       const hash = generateHash({ userId, amount, merchantId, text: rawText });
       txLogger.info("✅ Hash generated", { hash });
 
-      // Step 2: Store on Solana
+      // 🌐 Step 2: Store on Solana
       txLogger.info("🌐 Storing hash on Solana...");
       const solanaSignature = await storeOnSolana(hash);
       if (!solanaSignature) throw new Error("Solana storage failed");
       txLogger.info("✅ Stored on Solana", { solanaSignature });
 
-      // Step 3: Update transaction in DB
+      // 🛠️ Step 3: Update transaction in DB
       txLogger.info("📝 Updating transaction in DB...", {
         transactionId,
         merchantId: parsedMerchantId,

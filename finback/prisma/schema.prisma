@@ -7,11 +7,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Category {
-  id           Int           @id @default(autoincrement())
-  name         String        @unique @db.VarChar(50)
-  transactions Transaction[]
-}
+
 
 model DebtSimulation {
   id              Int      @id @default(autoincrement())
@@ -53,7 +49,7 @@ model TransactionMetadata {
   id               String      @id @default(uuid())
   transactionId    String      @unique
   productDetails   String?
-  transactionType  String?     @db.VarChar(10)
+  transactionType  String?     @db.VarChar(30)
   paymentMode      String?     @db.VarChar(20)
   matchStatus      String?     @default("PENDING")
   matchExpiresAt   DateTime?
@@ -83,9 +79,8 @@ model Transaction {
   solanaTxHash    String?              @db.VarChar(64)
   receivedAt      DateTime             @default(now())
   updatedAt       DateTime             @default(now()) @updatedAt
-  categoryId      Int?
+  category        String?              @db.VarChar(50) // Direct string field now
   merchantId      Int?
-  category        Category?            @relation(fields: [categoryId], references: [id])
   merchant        Merchant?            @relation(fields: [merchantId], references: [id])
   user            User                 @relation(fields: [userId], references: [id])
   metadata        TransactionMetadata?
@@ -111,6 +106,12 @@ model User {
   mobileNumber            String?                  @unique @db.Char(10)
   googleId                String                   @unique
   lastGmailHistoryId      String?
+
+  // ✅ New optional fields
+  age                     Int?
+  occupation              String?
+  cityTier                String?
+
   debts                   Debt[]
   debtSimulations         DebtSimulation[]
   financialScoreSnapshots FinancialScoreSnapshot[]
@@ -118,6 +119,7 @@ model User {
   transactions            Transaction[]
   userDebts               UserDebt[]
 }
+
 
 model UserDebt {
   id                Int      @id @default(autoincrement())
@@ -135,29 +137,45 @@ model UserDebt {
 
 model FinancialScoreSnapshot {
   id                Int        @id @default(autoincrement())
+
+  // Relation to User
   userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Core Score Data
   financialScore    Int
-  savingsRate       Decimal    @db.Decimal(5, 4)
+
+  // Derived Metrics
+  savingsRate       Decimal    @db.Decimal(5, 4)   // e.g., 0.2345 = 23.45%
   debtToIncomeRatio Decimal    @db.Decimal(5, 4)
-  essNonEssRatio    Decimal    @db.Decimal(6, 2)
+  essNonEssRatio    Decimal    @db.Decimal(6, 2)   // ratio like 2.15 (ESS/NON_ESS)
+
+  // Flags
   highExpenseFlag   Boolean
+
+  // Raw Amounts
   income            Decimal    @db.Decimal(12, 2)
   disposableIncome  Decimal    @db.Decimal(12, 2)
   essentialSpend    Decimal    @db.Decimal(10, 2)
   nonEssentialSpend Decimal    @db.Decimal(10, 2)
   totalExpenses     Decimal    @db.Decimal(10, 2)
+
+  // Metadata (Enums)
   occupation        Occupation
   cityTier          CityTier
   ageGroup          AgeGroup
+
+  // Snapshot Info
   periodType        PeriodType @default(monthly)
   periodStart       DateTime
   periodEnd         DateTime
   createdAt         DateTime   @default(now())
-  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Indexes for performance
   @@index([userId])
   @@index([periodStart, periodEnd])
 }
+
 
 enum Occupation {
   Student

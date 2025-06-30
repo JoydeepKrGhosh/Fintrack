@@ -1,6 +1,5 @@
-const { calculateCityTierMultiplier, getOccupationModifier } = require('../utils/financialRules');
+const { calculateCityTierMultiplier, getOccupationModifier } = require('../../utils/financialRules.js');
 
-// Constants for scoring rules
 const SCORE_CONFIG = {
   BASE: 65,
   SAVINGS: {
@@ -30,6 +29,14 @@ const calculateFinancialScore = (userData) => {
     age = 0,
     occupation = '',
     cityTier = 'Tier-3',
+    rent = 0,
+
+    // Ratios passed in from aggregator
+    savingsRate: providedSavingsRate,
+    debtToIncomeRatio: providedDebtToIncomeRatio,
+    essNonEssRatio: providedEssNonEssRatio,
+
+    // Optional raw components for fallback calculation
     groceries = 0,
     utilities = 0,
     healthcare = 0,
@@ -38,7 +45,6 @@ const calculateFinancialScore = (userData) => {
     eatingOut = 0,
     entertainment = 0,
     miscellaneous = 0,
-    rent = 0,
   } = userData;
 
   if (income <= 0) {
@@ -49,27 +55,39 @@ const calculateFinancialScore = (userData) => {
   }
 
   const explanation = [];
-
-  const savingsRate = Math.min(disposableIncome / (income + 1), 1.0);
-  const debtToIncome = (loanRepayment + insurance) / (income + 1);
-
-  const essentialSpend = groceries + utilities + healthcare + transport + education;
-  const nonEssentialSpend = eatingOut + entertainment + miscellaneous;
-  const essNonEssRatio = essentialSpend / (nonEssentialSpend + 1);
-
-  const costAdjustedIncome = income / calculateCityTierMultiplier(cityTier);
-  const totalExpenses = essentialSpend + nonEssentialSpend + rent + loanRepayment + insurance;
-  const highExpenseFlag = totalExpenses / costAdjustedIncome > 0.8;
-
   let score = SCORE_CONFIG.BASE;
   explanation.push(`Base score: ${score}`);
+
+  // Derived values (fallbacks if not passed from upstream)
+  const savingsRate = providedSavingsRate ?? Math.min(disposableIncome / (income + 1), 1.0);
+  const debtToIncome = providedDebtToIncomeRatio ?? ((loanRepayment + insurance) / (income + 1));
+  const essNonEssRatio =
+    providedEssNonEssRatio ??
+    ((groceries + utilities + healthcare + transport + education) /
+      (eatingOut + entertainment + miscellaneous + 1));
+
+  const totalExpenses =
+    groceries +
+    utilities +
+    healthcare +
+    transport +
+    education +
+    eatingOut +
+    entertainment +
+    miscellaneous +
+    rent +
+    loanRepayment +
+    insurance;
+
+  const costAdjustedIncome = income / calculateCityTierMultiplier(cityTier);
+  const highExpenseFlag = totalExpenses / costAdjustedIncome > 0.8;
 
   // Occupation modifier
   const occupationModifier = getOccupationModifier(occupation);
   score += occupationModifier;
   explanation.push(`Occupation modifier (${occupation}): +${occupationModifier}`);
 
-  // Savings rate scoring
+  // Savings rate
   if (occupation === 'Student') {
     if (savingsRate > 0.1) {
       score += SCORE_CONFIG.SAVINGS.STUDENT_HIGH;
@@ -88,7 +106,7 @@ const calculateFinancialScore = (userData) => {
     }
   }
 
-  // Debt-to-income scoring
+  // Debt-to-income
   if (age < 25) {
     if (debtToIncome < 0.3) {
       score += SCORE_CONFIG.DEBT.LOW_AGE;
@@ -104,7 +122,7 @@ const calculateFinancialScore = (userData) => {
     }
   }
 
-  // Essential/non-essential spend ratio
+  // Spending discipline
   if (occupation === 'Retired') {
     if (essNonEssRatio > 1.0) {
       score += SCORE_CONFIG.SPENDING_RATIO.RETIRED;
@@ -117,7 +135,7 @@ const calculateFinancialScore = (userData) => {
     }
   }
 
-  // High expense pressure
+  // Expense pressure
   if (highExpenseFlag) {
     score += SCORE_CONFIG.EXPENSE_PENALTY;
     explanation.push(`High total expenses relative to income: ${SCORE_CONFIG.EXPENSE_PENALTY}`);
@@ -150,7 +168,8 @@ const generateFinancialScore = (req, res) => {
           'income', 'disposableIncome', 'loanRepayment', 'insurance',
           'age', 'occupation', 'cityTier', 'groceries', 'utilities',
           'healthcare', 'transport', 'education', 'eatingOut',
-          'entertainment', 'miscellaneous', 'rent'
+          'entertainment', 'miscellaneous', 'rent',
+          'savingsRate', 'debtToIncomeRatio', 'essNonEssRatio'
         ],
       },
     });
@@ -160,4 +179,12 @@ const generateFinancialScore = (req, res) => {
   }
 };
 
-module.exports = { generateFinancialScore };
+
+module.exports = {
+  generateFinancialScore, // Express handler
+  calculateFinancialScore, // Core logic
+};
+
+
+
+
