@@ -3,7 +3,7 @@ name: Deploy to Google App Engine
 on:
   push:
     branches:
-      - deploy-cloud-build   # 👈 change to your deploy branch if needed
+      - deploy-cloud-build   # 👉 Change this to the branch you want to deploy from
 
 jobs:
   deploy:
@@ -13,15 +13,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          project_id: YOUR_PROJECT_ID    # 👈 replace with your GCP project ID
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
-          export_default_credentials: true
+          node-version: '20'    # 👉 Use your Node.js version (you have nodejs20 in app.yaml)
 
-      - name: Deploy App Engine app
-        run: gcloud app deploy finback/app.yaml --quiet
+      - name: Install dependencies
+        run: npm install
 
-      - name: Deploy cron.yaml
-        run: gcloud app deploy finback/cron.yaml --quiet
+      - name: Deploy to Google App Engine
+        uses: google-github-actions/deploy-appengine@v2
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          project_id: 'fintrack-463705'
