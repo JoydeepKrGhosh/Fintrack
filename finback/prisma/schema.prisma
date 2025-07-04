@@ -20,16 +20,6 @@ model DebtSimulation {
   user            User?    @relation(fields: [userId], references: [id])
 }
 
-model Debt {
-  id             Int      @id @default(autoincrement())
-  userId         String?
-  name           String   @db.VarChar(255)
-  balance        Decimal  @db.Decimal(12, 2)
-  interestRate   Decimal  @db.Decimal(5, 2)
-  minimumPayment Decimal  @db.Decimal(12, 2)
-  createdAt      DateTime @default(now())
-  user           User?    @relation(fields: [userId], references: [id])
-}
 
 model Merchant {
   id             Int           @id @default(autoincrement())
@@ -117,23 +107,10 @@ model User {
   financialScoreSnapshots FinancialScoreSnapshot[]
   Token                   Token?
   transactions            Transaction[]
-  userDebts               UserDebt[]
 }
 
 
-model UserDebt {
-  id                Int      @id @default(autoincrement())
-  userId            String
-  loanType          String
-  monthlyEmi        Float
-  outstandingAmount Float
-  interestRate      Float
-  startDate         DateTime
-  tenureMonths      Int
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
+
 
 model FinancialScoreSnapshot {
   id                Int        @id @default(autoincrement())
@@ -203,4 +180,75 @@ enum PeriodType {
   monthly
   quarterly
   yearly
+}
+
+model Debt {
+  id             Int         @id @default(autoincrement())
+  userId         String
+  name           String      @db.VarChar(255)
+  principal      Decimal     @db.Decimal(12, 2)
+  balance        Decimal     @db.Decimal(12, 2)
+  interestRate   Decimal     @db.Decimal(5, 2)
+  minimumPayment Decimal     @db.Decimal(12, 2)
+  startDate      DateTime
+  endDate        DateTime?
+  durationMonths Int
+  paymentFrequency PaymentFrequency
+  paidAmount     Decimal     @db.Decimal(12, 2) @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  status         DebtStatus  @default(ACTIVE)
+  notes          String?
+  
+  // Relations
+  user           User        @relation(fields: [userId], references: [id])
+  payments       DebtPayment[]
+  
+  @@index([userId])
+  @@index([status])
+}
+
+enum PaymentFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+  CUSTOM
+}
+
+enum DebtStatus {
+  ACTIVE
+  PAID
+  DEFAULTED
+  SETTLED
+}
+
+model DebtPayment {
+  id          Int       @id @default(autoincrement())
+  debtId      Int
+  amount      Decimal   @db.Decimal(12, 2)
+  date        DateTime  @default(now())
+  paymentType String?   @db.VarChar(20) // REGULAR, EXTRA, SETTLEMENT, etc.
+  notes       String?
+  isProcessed Boolean   @default(false) // Useful for scheduled payments
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  debt        Debt      @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  
+  @@index([debtId])
+  @@index([date])
+  @@index([isProcessed])
+}
+
+// Alternatively, you could use an enum for paymentType:
+enum PaymentType {
+  REGULAR
+  EXTRA
+  SETTLEMENT
+  LATE
+  PARTIAL
 }

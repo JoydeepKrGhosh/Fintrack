@@ -16,6 +16,8 @@ const { transactionWorker } = require('./src/workers/transactionProcessor.js');
 const transactionRoutes = require('./src/routes/transactionroutes.js');
 const generateMonthlyScores = require('./cron/generateMonthlyScore'); // Fixed import
 
+const debtRoutes = require('./src/routes/debt.routes.js');
+
 
 const prisma = new PrismaClient(); // ✅ Initialize Prisma Client
 const app = express();
@@ -27,6 +29,8 @@ if (process.env.NODE_ENV !== 'test') transactionWorker;
 app.use("/api/auth", authRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api', fetchGmailRoutes);
+app.use('/api/debts', debtRoutes);
+
 
 // 🧪 TEST-ONLY ROUTE — Monthly Score Job Trigger
 app.get('/api/run-score-job', async (req, res) => {
